@@ -6,7 +6,7 @@ Run at the end of each gameweek to have more granular statistics, showing player
 
 ## Installation
 
-requirements.txt contains the required modules to run the program.
+requirements.txt contains the libraries required to run the program.
 
 More details about the understat package can be found here: 
 
