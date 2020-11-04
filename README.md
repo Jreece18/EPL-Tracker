@@ -8,7 +8,9 @@ Run at the end of each gameweek to have more granular statistics, showing player
 
 requirements.txt contains the required modules to run the program.
 
-More details about the understat package can be found here: https://understat.readthedocs.io/en/latest/index.html
+More details about the understat package can be found here: 
+
+https://understat.readthedocs.io/en/latest/index.html
 
 ## Usage
 
