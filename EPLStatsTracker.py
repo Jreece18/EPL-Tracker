@@ -10,14 +10,32 @@ import nest_asyncio
 import json
 import aiohttp
 from understat import Understat
+import difflib
 from fuzzywuzzy import fuzz
 
 pd.set_option('precision', 3)
 pd.options.display.precision = 1
 
+# Checks name length and adjusts player_name if it's more than 2 words or has other errors
+def checkNameLength(df):
+    string = df['player_name']
+    
+    names = string.split(' ')
+    web_names = df['web_name'].split(' ')
+    count = len(names)
+    if count > 2:
+        # If first name is web name, don't repeat
+        if names[0] == web_names[-1]:
+            string = names[0]
+        else:
+            string = names[0] + ' ' + web_names[-1]
+    if count == 2:
+        # Ensure player name not repeated
+        if names[0] == names[-1]:
+            string = web_names[0] + ' ' + web_names[-1]
+    return string
 
-### Scrape FPL API ### 
-
+### Get FPL Data ###
 # Connects to the API and converts to json
 url = requests.get('https://fantasy.premierleague.com/api/bootstrap-static/')
 data = url.json()
@@ -45,7 +63,8 @@ doc = docx.Document()
 doc.add_paragraph(data_clean)
 doc.save(jsonclean)
 
-### Scrape Understat ###
+### Get Understat Data ###
+
 nest_asyncio.apply()
 
 ustat = []
@@ -69,41 +88,49 @@ doc = docx.Document()
 doc.add_paragraph(ustat)
 doc.save(ustat_jsonclean)
 
-### Convert to Pandas DF, save as CSV ###
-
-## FPL
+### Convert FPL Data to pandas ### 
 
 players = data['elements']
 
 df = pd.DataFrame(players)
 
-cols = ['first_name', 'second_name', 'web_name', 'id', 'element_type', 'team', 'team_code', 'total_points', 'goals_scored', 'assists', 'clean_sheets', 'bonus', 'saves', 'yellow_cards', 'red_cards', 'form', 
+cols = ['first_name', 'second_name', 'web_name', 'id', 'element_type', 'team', 'team_code', 'now_cost', 'total_points', 'goals_scored', 'assists', 'clean_sheets', 'bonus', 'saves', 'yellow_cards', 'red_cards', 'form', 
         'points_per_game', 'penalties_saved', 'penalties_missed', 'influence', 'creativity', 'threat', 'ict_index', 'transfers_in_event', 'transfers_out_event' ]
 df = df[cols]
 
-## Understat
+teams = {1: 'Arsenal', 2: 'Aston Villa', 3: 'Brighton', 4: 'Burnley', 5: 'Chelsea', 6: 'Crystal Palace',
+7: 'Everton', 8: 'Fulham', 9: 'Leicester', 10: 'Leeds', 11: 'Liverpool', 12: 'Manchester City', 13: 'Manchester United',
+14: 'Newcastle United', 15: 'Sheffield United', 16: 'Southampton', 17: 'Tottenham Hotspur', 
+18: 'West Brom', 19: 'West Ham', 20: 'Wolves'}
+
+df.loc[:, 'team'] = df['team'].map(teams)
+
+### Convert Understat Data to pandas ### 
+
 ustat = json.loads(ustat[0])
 dfu = pd.DataFrame(ustat)
 
 colsu = ['key_passes', 'npg', 'npxG', 'player_name', 'shots', 'xA', 'xG', 'xGBuildup', 'xGChain']
 dfu = dfu[colsu]
 
-# Split player names
 dfu.loc[:, 'first_name'] = dfu['player_name'].str.split(' ').str[0]
 dfu.loc[:, 'second_name'] = dfu['player_name'].str.split(' ').str[-1]
 
+### Merge both dataframes on player_name ### 
+
 df['player_name'] = df['first_name'] + ' ' + df['second_name']
 
+df.loc[:, 'player_name'] = df.apply(lambda x: checkNameLength(x), axis=1)
 
 # Finds missing names in both datasets
 names_u = list(set(list(dfu.player_name)) - set(list(df.player_name)))
 names =  list(set(list(df.player_name)) - set(list(dfu.player_name)))
 
-# Splits understat name and finds surname 
+# Splits name and finds surname in names_u
 matches = []
-for name in names_u:
+for name in names:
     sub = name.split(' ')[-1]
-    match = [(name, s) for s in names if sub in s]
+    match = [(name, s) for s in names_u if sub in s]
     matches.append(match)
     
 # Finds name matches in both datasets by fuzzy string matching
@@ -111,7 +138,7 @@ name_change = {}
 for match in matches: 
     # If only one match, save as key-value pair
     if len(match) == 1:
-        name_change[match[0][1]] = match[0][0]
+        name_change[match[0][0]] = match[0][1]
         matches.remove(match)
     # If multiple matches, take the key-value pair with highest fuzzy match ratio
     elif len(match) > 1:
@@ -124,24 +151,73 @@ for match in matches:
         name_change[save[1]] = save[0]
         matches.remove(match)
 
-# Change instances of player name to Ustat name formatting
+# Manually fix errors in name_change dictionary
+name_change['Felipe Anderson Pereira Gomes'] = 'Felipe Anderson'
+name_change['Thiago Silva'] = 'Thiago Silva'
+name_change['Dele Alli'] = 'Dele Alli'
+name_change['Bernard'] = 'Bernard'
+name_change['David Martin'] = 'David Martin'
+
+# Change instances of player name to match
+dfu.loc[:, 'player_name'].replace(name_change, inplace=True)
 df.loc[:, 'player_name'].replace(name_change, inplace=True)
 
+# Check missing names
+print(dfu[~dfu['player_name'].isin(df['player_name'].tolist())]['player_name'])
+
+# Manually build dictionary to fill in names that don't match
+manual_name_change = {'Jorge Luiz Frello Filho': 'Jorginho',
+                      'Aleksandar Mitrović': 'Aleksandar Mitrovic',
+                      'Benjamin Chilwell': 'Ben Chilwell',
+                      'Bobby Decordova-Reid': 'Bobby Reid',
+                      'Rodrigo Moreno': 'Rodrigo',
+                      'Romain Saïss': 'Romain Saiss',
+                      'Gabriel Magalhães': 'Gabriel',
+                      'Nicolas Pépé': 'Nicolas Pepe',
+                      'Tanguy NDombele Alvaro': 'Tanguy Ndombele',
+                      'Donny Beek': 'Donny van de Beek',
+                      'Joelinton Joelinton': 'Joelinton',
+                      'Thiago Alcántara': 'Thiago',
+                      'Alexis Allister': 'Alexis Mac Allister',
+                      'Bamidele Alli': 'Dele Alli',
+                      'Ahmed Mohamady': 'Ahmed Elmohamady',
+                      'Rodrigo Hernandez': 'Rodri',
+                      'Ahmed Hegazy': 'Ahmed Hegazi',
+                      'Emiliano Martínez': 'Emiliano Martinez',
+                      'Kepa Arrizabalaga': 'Kepa',
+                      'Çaglar Söyüncü': 'Caglar Söyüncü',
+                      'Franck Zambo': 'André-Frank Anguissa',
+                      'Bernard Bernard': 'Bernard',
+                      'Jack O&#039;Connell': 'Jack O\'Connell',
+                      'Daniel N&#039;Lundulu': 'Daniel N\'Lundulu',
+                      'Dara O&#039;Shea': 'Dara O\'Shea',
+                      'Vitor Ferreira': 'Vitinha',
+                      'N&#039;Golo Kanté': 'N\'Golo Kanté',
+                      'Fernando Fernandinho': 'Fernandinho',
+                      'Saïd Benrahma': 'Said Benrahma'
+                     }
+
+# Replace names via manual_name_change dictionary
+dfu.loc[:, 'player_name'].replace(manual_name_change, inplace=True)
+df.loc[:, 'player_name'].replace(manual_name_change, inplace=True)
+
+# Check to ensure no names missing
+print(dfu[~dfu['player_name'].isin(df['player_name'].tolist())]['player_name'])
+
 # Join DataFrames
-df = pd.concat([df.set_index('player_name'), dfu.set_index('player_name')], axis=1, join='inner').reset_index()
+df = pd.concat([df.set_index('player_name'), dfu.set_index('player_name')], axis=1, join='outer').reset_index()
 # Drop unnecessary columns
 df.drop(['first_name', 'team_code', 'second_name', 'first_name', 'second_name'], axis=1, inplace=True)
-# Change Element type to position
+# Change Element type bto position
 position_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
-df.loc[:, 'element_type'] = df['element_type'].map(position_map);
-
-df.rename(columns={'element_type':'position'}, inplace=True)
-
-# Save gameweek data to csv
+df.loc[:, 'element_type'] = df['element_type'].map(position_map)
+df.rename(columns={'element_type':'position', 'index': 'player_name'}, inplace=True)
+# Fill na to prevent NULL error in SQL
+df.fillna(0, inplace=True)
+# Save to csv
 df.to_csv('FPL-{}-{}.csv'.format(season, week))
 
-### Create SQLITE Database ###
-
+### Convert to SQL
 # db name
 db = 'EPL-Data-{}.sqlite'.format(season)
 
@@ -157,6 +233,7 @@ web_name    text    NOT NULL,
 player_id    integer    NOT NULL,
 position   text   NOT NULL,
 team   text   NOT NULL,
+value    real    NOT NULL,
 total_points    integer    NOT NULL,
 goals_scored    integer    NOT NULL,
 assists    integer    NOT NULL,
@@ -191,16 +268,16 @@ gameweek    integer    NOT NULL
 cur.execute(sql_create_player_table)
 conn.commit()
 
+df.loc[:, 'gameweek'] = week
 
-### Insert gameweek data to sqlite table ### 
-
-# Iterates over each row and inserts into db. All in the same table.
+# Iterates over each row and inserts into db. All in same table.
 for i, player in df.iterrows():
     name = player['player_name']
     web_name = player['web_name']
     player_id = player['id']
     position = player['position']
     team = player['team']
+    cost = player['now_cost']
     total_points = player['total_points']
     goals_scored = player['goals_scored']
     assists = player['assists']
@@ -229,13 +306,12 @@ for i, player in df.iterrows():
     xGChain = player['xGChain']
     gameweek = week
     
-    # Parameterised queries rather that ''.format() 
     cur.execute('''INSERT OR REPLACE INTO PLAYER
-    (name, web_name, player_id, position, team, total_points, goals_scored, assists, clean_sheets,
+    (name, web_name, player_id, position, team, value, total_points, goals_scored, assists, clean_sheets,
     bonus, saves, yellow_cards, red_cards, form, points_per_game, penalties_saved, penalties_missed,
     influence, creativity, threat, ict_index, transfers_in_event, transfers_out_event, key_passes,
-    npg, npxG, shots, xA, xG, xGBuildup, xGChain, gameweek) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ''', (name, web_name, player_id, position, team, total_points, goals_scored, assists, clean_sheets,
+    npg, npxG, shots, xA, xG, xGBuildup, xGChain, gameweek) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ''', (name, web_name, player_id, position, team, cost, total_points, goals_scored, assists, clean_sheets,
     bonus, saves, yellow_cards, red_cards, form, points_per_game, penalties_saved, penalties_missed,
     influence, creativity, threat, ict_index, transfers_in_event, transfers_out_event, key_passes,
     npg, npxG, shots, xA, xG, xGBuildup, xGChain, gameweek) )
